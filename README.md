@@ -6,7 +6,7 @@ MVP using libcurl to test gRPC endpoints.
 
 With `ninja` as generator:
 
-```
+```shell
 mkdir build && cd build
 cmake -DPROTOBUF_FETCHCONTENT=true -GNinja ..
 ninja
@@ -33,7 +33,7 @@ Finally, some options are needed depending on the features enabled/disabled in t
 
 When running in client streaming or bidi streaming, the CLI will ask for input on STDIN. Each line is the equivalent of the input of `--data`. And the the input can be stopped with CTRL+d. For example, with a client streaming RPC called `GreetJointly`:
 
-```
+```shell
 ./grpc-curl "http://localhost:50051/" greet.GreetService/GreetJointly`
 {"name": "clement", "separator": " and "}
 {"name": "daniel"}
