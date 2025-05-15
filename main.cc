@@ -444,7 +444,7 @@ auto main(int argc, char **argv) -> int {
     google::protobuf::DynamicMessageFactory dynamic_factory(pool);
 
     curl_easy_setopt(curl_handle.get(), CURLOPT_VERBOSE, ctx.verbose_flag);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + rpc).c_str());
+    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + rpc).c_str()); // TODO insert / between if needed
     curl_easy_setopt(curl_handle.get(), CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
     curl_easy_setopt(curl_handle.get(), CURLOPT_USERAGENT, "libcurl/8.7.1"); // TODO better user agent
     curl_easy_setopt(curl_handle.get(), CURLOPT_POST, 1L);
