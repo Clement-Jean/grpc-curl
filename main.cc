@@ -331,14 +331,6 @@ auto get_rpc_info(const google::protobuf::DescriptorPool *pool, const std::strin
   return std::make_pair(svc_desc, rpc_desc);
 }
 
-static auto handle_req(CURL *curl_handle) {
-  auto res = curl_easy_perform(curl_handle);
-
-  if (res != CURLE_OK) {
-    std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
-  }
-}
-
 bool is_installed_proto_path(const std::string& path) {
   std::string file_path = path + "/google/protobuf/descriptor.proto";
   return std::filesystem::exists(file_path);
