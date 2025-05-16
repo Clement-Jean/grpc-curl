@@ -201,8 +201,17 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb,
       return 0;
     }
 
-    auto out = google::protobuf::io::FileOutputStream(0); // STDOUT
-    google::protobuf::TextFormat::Print(*res_message, &out); // or JSON
+    std::string out;
+    auto opts = google::protobuf::util::JsonPrintOptions { .add_whitespace = true };
+    auto encode_req = google::protobuf::util::MessageToJsonString(*res_message, &out, opts);
+    if (encode_req != absl::OkStatus()) {
+      std::cerr << "failed to encode to JSON" << std::endl;
+      return 0;
+    }
+
+    std::cout << out << std::endl;
+    //auto out = google::protobuf::io::FileOutputStream(0); // STDOUT
+    //google::protobuf::TextFormat::Print(*res_message, &out); // or JSON
   } else {
     return 0;
   }
