@@ -442,6 +442,13 @@ auto is_reflection_enabled(const Context &ctx, const std::string &url,
     }
     curl_easy_setopt(curl_handle.get(), CURLOPT_HTTPHEADER, list);
 
+    if (ctx.ca_cert.size() != 0) {
+      curl_easy_setopt(curl_handle.get(), CURLOPT_SSLVERSION, CURL_SSLVERSION_MAX_DEFAULT);
+      curl_easy_setopt(curl_handle.get(), CURLOPT_SSL_VERIFYPEER, 1L);
+      curl_easy_setopt(curl_handle.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+      curl_easy_setopt(curl_handle.get(), CURLOPT_CAINFO, ctx.ca_cert.c_str());
+    }
+
     req_queue.push(std::move(req_message));
     auto res = curl_easy_perform(curl_handle.get());
     struct curl_header *type;
@@ -492,6 +499,8 @@ auto is_reflection_enabled(const Context &ctx, const std::string &url,
 auto get_pool(const Context &ctx, const std::string& url, const std::string& rpc)
     -> std::pair<std::unique_ptr<google::protobuf::DescriptorPool>,
                  std::unique_ptr<google::protobuf::compiler::Importer>> {
+
+  // TODO maybe we should avoid checking reflection if the --proto is passed?
   std::unique_ptr<google::protobuf::DescriptorPool> reflection_pool = is_reflection_enabled(ctx, url, rpc);
 
   if (reflection_pool == nullptr) {
