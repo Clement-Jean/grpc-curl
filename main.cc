@@ -410,8 +410,11 @@ auto add_default_proto_paths(google::protobuf::compiler::DiskSourceTree& source_
   }
 }
 
-auto is_reflection_enabled(const Context &ctx, const std::string &url,
-                           const std::string &rpc) -> std::unique_ptr<google::protobuf::DescriptorPool> {
+auto is_reflection_enabled(CURL *curl_handle, const Context &ctx,
+                           const std::string &url, const std::string &rpc)
+    -> std::unique_ptr<google::protobuf::DescriptorPool> {
+  assert(curl_handle != nullptr);
+
   size_t svc_end = rpc.find_last_of('/');
   if (svc_end == std::string::npos || svc_end == 0) {
     std::cerr << "invalid rpc provided to is_reflection_enabled" << std::endl;
@@ -421,87 +424,62 @@ auto is_reflection_enabled(const Context &ctx, const std::string &url,
   auto req_message = std::make_unique<grpc::reflection::v1::ServerReflectionRequest>();
   req_message->set_file_containing_symbol(rpc.substr(0, svc_end));
 
-  struct curl_slist *list = NULL;
-  auto curl_handle = std::unique_ptr<CURL, void(*)(CURL*)>(curl_easy_init(), (void (*)(CURL *))curl_easy_cleanup);
-  if (curl_handle) {
-    std::queue<std::unique_ptr<grpc::reflection::v1::ServerReflectionRequest>> req_queue;
-    grpc::reflection::v1::ServerReflectionResponse res_message;
+  std::queue<std::unique_ptr<grpc::reflection::v1::ServerReflectionRequest>> req_queue;
+  grpc::reflection::v1::ServerReflectionResponse res_message;
 
-    curl_easy_setopt(curl_handle.get(), CURLOPT_VERBOSE, ctx.verbose_flag);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + "grpc.reflection.v1.ServerReflection/ServerReflectionInfo").c_str());
-    curl_easy_setopt(curl_handle.get(), CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_USERAGENT, "libcurl/8.7.1"); // TODO better user agent
-    curl_easy_setopt(curl_handle.get(), CURLOPT_POST, 1L);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_READFUNCTION, read_callback);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_READDATA, (void *)&req_queue);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_WRITEFUNCTION, write_callback); // TODO we shouldn't print the response message
-    curl_easy_setopt(curl_handle.get(), CURLOPT_WRITEDATA, (void *)&res_message);
-    list = curl_slist_append(list, "Content-Type: application/grpc+proto");
-    for (const auto& header : ctx.headers) {
-      list = curl_slist_append(list, header.c_str());
-    }
-    curl_easy_setopt(curl_handle.get(), CURLOPT_HTTPHEADER, list);
+  curl_easy_setopt(curl_handle, CURLOPT_URL, (url + "grpc.reflection.v1.ServerReflection/ServerReflectionInfo").c_str());
+  curl_easy_setopt(curl_handle, CURLOPT_READDATA, (void *)&req_queue);
+  // TODO we shouldn't print the response message (maybe set different CURLOPT_WRITEFUNCTION?)
+  curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&res_message);
 
-    if (ctx.ca_cert.size() != 0) {
-      curl_easy_setopt(curl_handle.get(), CURLOPT_SSLVERSION, CURL_SSLVERSION_MAX_DEFAULT);
-      curl_easy_setopt(curl_handle.get(), CURLOPT_SSL_VERIFYPEER, 1L);
-      curl_easy_setopt(curl_handle.get(), CURLOPT_SSL_VERIFYHOST, 2L);
-      curl_easy_setopt(curl_handle.get(), CURLOPT_CAINFO, ctx.ca_cert.c_str());
-    }
+  req_queue.push(std::move(req_message));
+  auto res = curl_easy_perform(curl_handle);
+  struct curl_header *type;
+  CURLHcode h = curl_easy_header(curl_handle, "grpc-status", 0, CURLH_HEADER, -1, &type);
 
-    req_queue.push(std::move(req_message));
-    auto res = curl_easy_perform(curl_handle.get());
-    struct curl_header *type;
-    CURLHcode h = curl_easy_header(curl_handle.get(), "grpc-status", 0, CURLH_HEADER, -1, &type);
-
-    curl_slist_free_all(list);
-
-    if (res != CURLE_OK) {
-      std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
-      return nullptr;
-    }
-
-    if (h != CURLHE_MISSING) {
-      if (type != nullptr && type->amount != 0 && type->value != nullptr && std::string(type->value) != "0") {
-	h = curl_easy_header(curl_handle.get(), "grpc-message", 0, CURLH_HEADER,
-			     -1, &type);
-	// TODO we probably shouldn't print this as an error
-	//      because it just mean that the reflection is not enabled
-	std::cerr << "error: " << type->value << std::endl;
-	return nullptr;
-      }
-    }
-
-    auto pool = std::make_unique<google::protobuf::DescriptorPool>();
-    auto fdr = res_message.file_descriptor_response();
-
-    // FIX based on current (naive) tests the file descriptors are in reverse
-    //     order. Meaning that if a.proto depends on b.proto, this will be
-    //     [a.proto, b.proto] and not [b.proto, a.proto]
-    for (auto i = fdr.file_descriptor_proto_size() - 1; i >= 0; i--) {
-      auto fd_bytes = fdr.file_descriptor_proto(i);
-      google::protobuf::io::ArrayInputStream raw_input(fd_bytes.data(), fd_bytes.size());
-      google::protobuf::io::CodedInputStream coded_input(&raw_input);
-
-      google::protobuf::FileDescriptorProto fd;
-      if (fd.ParseFromCodedStream(&coded_input)) {
-	pool->BuildFile(fd);
-      }
-    }
-
-    return pool;
+  if (res != CURLE_OK) {
+    std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
+    return nullptr;
   }
 
-  return nullptr;
+  if (h != CURLHE_MISSING) {
+    if (type != nullptr && type->amount != 0 && type->value != nullptr && std::string(type->value) != "0") {
+      h = curl_easy_header(curl_handle, "grpc-message", 0, CURLH_HEADER,
+			   -1, &type);
+      // TODO we probably shouldn't print this as an error
+      //      because it just mean that the reflection is not enabled
+      std::cerr << "error: " << type->value << std::endl;
+      return nullptr;
+    }
+  }
+
+  auto pool = std::make_unique<google::protobuf::DescriptorPool>();
+  auto fdr = res_message.file_descriptor_response();
+
+  // FIX based on current (naive) tests the file descriptors are in reverse
+  //     order. Meaning that if a.proto depends on b.proto, this will be
+  //     [a.proto, b.proto] and not [b.proto, a.proto]
+  for (auto i = fdr.file_descriptor_proto_size() - 1; i >= 0; i--) {
+    auto fd_bytes = fdr.file_descriptor_proto(i);
+    google::protobuf::io::ArrayInputStream raw_input(fd_bytes.data(), fd_bytes.size());
+    google::protobuf::io::CodedInputStream coded_input(&raw_input);
+
+    google::protobuf::FileDescriptorProto fd;
+    if (fd.ParseFromCodedStream(&coded_input)) {
+      pool->BuildFile(fd);
+    }
+  }
+
+  return pool;
 }
 
 // we return the importer because it returns a reference to its private field pool_...
-auto get_pool(const Context &ctx, const std::string& url, const std::string& rpc)
+auto get_pool(CURL *curl_handle, const Context &ctx, const std::string& url, const std::string& rpc)
     -> std::pair<std::unique_ptr<google::protobuf::DescriptorPool>,
                  std::unique_ptr<google::protobuf::compiler::Importer>> {
 
   // TODO maybe we should avoid checking reflection if the --proto is passed?
-  std::unique_ptr<google::protobuf::DescriptorPool> reflection_pool = is_reflection_enabled(ctx, url, rpc);
+  std::unique_ptr<google::protobuf::DescriptorPool> reflection_pool = is_reflection_enabled(curl_handle, ctx, url, rpc);
 
   if (reflection_pool == nullptr) {
     if (ctx.protos.size() == 0) { // we need a proto file for the definitions
@@ -556,16 +534,7 @@ auto main(int argc, char **argv) -> int {
     std::string url = ctx.args[0];
     std::string rpc = ctx.args[1];
 
-    auto [pool, _] = get_pool(ctx, url, rpc);
-    if (pool == nullptr) {
-      return 1;
-    }
-
-    auto [svc_desc, method_desc] = get_rpc_info(pool.get(), rpc);
-    google::protobuf::DynamicMessageFactory dynamic_factory(pool.get());
-
     curl_easy_setopt(curl_handle.get(), CURLOPT_VERBOSE, ctx.verbose_flag);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + rpc).c_str()); // TODO insert / between if needed
     curl_easy_setopt(curl_handle.get(), CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
     curl_easy_setopt(curl_handle.get(), CURLOPT_USERAGENT, "libcurl/8.7.1"); // TODO better user agent
     curl_easy_setopt(curl_handle.get(), CURLOPT_POST, 1L);
@@ -584,6 +553,16 @@ auto main(int argc, char **argv) -> int {
       list = curl_slist_append(list, header.c_str());
     }
     curl_easy_setopt(curl_handle.get(), CURLOPT_HTTPHEADER, list);
+
+    auto [pool, _] = get_pool(curl_handle.get(), ctx, url, rpc);
+    if (pool == nullptr) {
+      return 1;
+    }
+
+    auto [svc_desc, method_desc] = get_rpc_info(pool.get(), rpc);
+    google::protobuf::DynamicMessageFactory dynamic_factory(pool.get());
+
+    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + rpc).c_str()); // TODO insert / between if needed
 
     RpcHandler rpc_handler(curl_handle.get(), svc_desc, method_desc, dynamic_factory, pool.get());
     ret_val = rpc_handler.handle(ctx);
