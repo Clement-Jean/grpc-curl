@@ -45,5 +45,4 @@ greeting: "hello clement and daniel"
 
 - processing of big messages
 - `-d @` to read the data on STDIN (with heredocs or pipes)
-- reflection
 - data compression

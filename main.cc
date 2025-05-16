@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <stdlib.h>
@@ -11,13 +12,17 @@
 
 #include <curl/curl.h>
 
+#include "proto/reflection.pb.h"
+
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/tokenizer.h>
 #include <google/protobuf/io/zero_copy_stream_impl.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/text_format.h>
 #include <google/protobuf/util/json_util.h>
 #include <google/protobuf/compiler/importer.h>
+#include <google/protobuf/struct.pb.h>
 
 class ErrorPrinter : public google::protobuf::io::ErrorCollector,
                      public google::protobuf::compiler::MultiFileErrorCollector
@@ -108,6 +113,9 @@ public:
         std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
 	return 1;
       }
+
+      // TODO check status + message
+
     } else if (_type == CLIENT_STREAMING) {
       // TODO if data == @ -> pipe (does this work on windows)
       //      else getline loop
@@ -138,6 +146,9 @@ public:
         std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
 	return 1;
       }
+
+      // TODO check status + message
+
     } else {
       std::string line = "";
 
@@ -165,7 +176,9 @@ public:
 	if (res != CURLE_OK) {
 	  std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
 	  return 1;
-	}
+        }
+
+	// TODO check status + message
       }
     }
 
@@ -312,16 +325,15 @@ auto check_options(const Context &ctx) -> bool {
     return false;
   }
 
-  if (ctx.protos.size() == 0) { // TODO if reflection is not enabled
-    std::cerr << "provide proto files please" << std::endl;
-    return false;
-  }
-
   return true;
 }
 
-auto get_rpc_info(const google::protobuf::DescriptorPool *pool, const std::string& rpc) -> std::pair<const google::protobuf::ServiceDescriptor*, const google::protobuf::MethodDescriptor*> {
+auto get_rpc_info(const google::protobuf::DescriptorPool *pool,
+                  const std::string &rpc)
+    -> std::pair<const google::protobuf::ServiceDescriptor *,
+                 const google::protobuf::MethodDescriptor *> {
   auto it = std::find(rpc.begin(), rpc.end(), '/');
+  assert(it != rpc.end());
   auto sep_pos = std::distance(rpc.begin(), it);
   auto svc = rpc.substr(0, sep_pos);
   auto method = rpc.substr(sep_pos + 1, std::distance(it, rpc.end()));
@@ -398,6 +410,121 @@ auto add_default_proto_paths(google::protobuf::compiler::DiskSourceTree& source_
   }
 }
 
+auto is_reflection_enabled(const Context &ctx, const std::string &url,
+                           const std::string &rpc) -> std::unique_ptr<google::protobuf::DescriptorPool> {
+  size_t svc_end = rpc.find_last_of('/');
+  if (svc_end == std::string::npos || svc_end == 0) {
+    std::cerr << "invalid rpc provided to is_reflection_enabled" << std::endl;
+    return nullptr;
+  }
+
+  auto req_message = std::make_unique<grpc::reflection::v1::ServerReflectionRequest>();
+  req_message->set_file_containing_symbol(rpc.substr(0, svc_end));
+
+  struct curl_slist *list = NULL;
+  auto curl_handle = std::unique_ptr<CURL, void(*)(CURL*)>(curl_easy_init(), (void (*)(CURL *))curl_easy_cleanup);
+  if (curl_handle) {
+    std::queue<std::unique_ptr<grpc::reflection::v1::ServerReflectionRequest>> req_queue;
+    grpc::reflection::v1::ServerReflectionResponse res_message;
+
+    curl_easy_setopt(curl_handle.get(), CURLOPT_VERBOSE, ctx.verbose_flag);
+    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + "grpc.reflection.v1.ServerReflection/ServerReflectionInfo").c_str());
+    curl_easy_setopt(curl_handle.get(), CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
+    curl_easy_setopt(curl_handle.get(), CURLOPT_USERAGENT, "libcurl/8.7.1"); // TODO better user agent
+    curl_easy_setopt(curl_handle.get(), CURLOPT_POST, 1L);
+    curl_easy_setopt(curl_handle.get(), CURLOPT_READFUNCTION, read_callback);
+    curl_easy_setopt(curl_handle.get(), CURLOPT_READDATA, (void *)&req_queue);
+    curl_easy_setopt(curl_handle.get(), CURLOPT_WRITEFUNCTION, write_callback); // TODO we shouldn't print the response message
+    curl_easy_setopt(curl_handle.get(), CURLOPT_WRITEDATA, (void *)&res_message);
+    list = curl_slist_append(list, "Content-Type: application/grpc+proto");
+    for (const auto& header : ctx.headers) {
+      list = curl_slist_append(list, header.c_str());
+    }
+    curl_easy_setopt(curl_handle.get(), CURLOPT_HTTPHEADER, list);
+
+    req_queue.push(std::move(req_message));
+    auto res = curl_easy_perform(curl_handle.get());
+    struct curl_header *type;
+    CURLHcode h = curl_easy_header(curl_handle.get(), "grpc-status", 0, CURLH_HEADER, -1, &type);
+
+    curl_slist_free_all(list);
+
+    if (res != CURLE_OK) {
+      std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
+      return nullptr;
+    }
+
+    if (h != CURLHE_MISSING) {
+      if (type != nullptr && type->amount != 0 && type->value != nullptr && std::string(type->value) != "0") {
+	h = curl_easy_header(curl_handle.get(), "grpc-message", 0, CURLH_HEADER,
+			     -1, &type);
+	// TODO we probably shouldn't print this as an error
+	//      because it just mean that the reflection is not enabled
+	std::cerr << "error: " << type->value << std::endl;
+	return nullptr;
+      }
+    }
+
+    auto pool = std::make_unique<google::protobuf::DescriptorPool>();
+    auto fdr = res_message.file_descriptor_response();
+
+    // FIX based on current (naive) tests the file descriptors are in reverse
+    //     order. Meaning that if a.proto depends on b.proto, this will be
+    //     [a.proto, b.proto] and not [b.proto, a.proto]
+    for (auto i = fdr.file_descriptor_proto_size() - 1; i >= 0; i--) {
+      auto fd_bytes = fdr.file_descriptor_proto(i);
+      google::protobuf::io::ArrayInputStream raw_input(fd_bytes.data(), fd_bytes.size());
+      google::protobuf::io::CodedInputStream coded_input(&raw_input);
+
+      google::protobuf::FileDescriptorProto fd;
+      if (fd.ParseFromCodedStream(&coded_input)) {
+	pool->BuildFile(fd);
+      }
+    }
+
+    return pool;
+  }
+
+  return nullptr;
+}
+
+// we return the importer because it returns a reference to its private field pool_...
+auto get_pool(const Context &ctx, const std::string& url, const std::string& rpc)
+    -> std::pair<std::unique_ptr<google::protobuf::DescriptorPool>,
+                 std::unique_ptr<google::protobuf::compiler::Importer>> {
+  std::unique_ptr<google::protobuf::DescriptorPool> reflection_pool = is_reflection_enabled(ctx, url, rpc);
+
+  if (reflection_pool == nullptr) {
+    if (ctx.protos.size() == 0) { // we need a proto file for the definitions
+	std::cerr << "provide proto files please" << std::endl;
+	return std::make_pair(nullptr, nullptr);
+      }
+
+      ErrorPrinter ec;
+      google::protobuf::compiler::DiskSourceTree source_tree;
+
+      source_tree.MapPath("", ".");
+      add_default_proto_paths(source_tree);
+      for (const auto& path : ctx.paths) {
+	source_tree.MapPath("", path);
+      }
+
+      auto importer = std::make_unique<google::protobuf::compiler::Importer>(&source_tree, &ec);
+      for (const auto& proto : ctx.protos) {
+	const google::protobuf::FileDescriptor* desc = importer->Import(proto);
+
+	if (desc == nullptr) {
+	  std::cerr << "failed to import proto file: " << proto << std::endl;
+	  return std::make_pair(nullptr, nullptr);
+	}
+      }
+
+      return std::make_pair(std::make_unique<google::protobuf::DescriptorPool>(importer->pool()), std::move(importer));
+  } else {
+    return std::make_pair(std::move(reflection_pool), nullptr);
+  }
+}
+
 auto main(int argc, char **argv) -> int {
   auto ctx = Context { .verbose_flag = 0 };
   ctx.args.reserve(2);
@@ -420,28 +547,13 @@ auto main(int argc, char **argv) -> int {
     std::string url = ctx.args[0];
     std::string rpc = ctx.args[1];
 
-    ErrorPrinter ec;
-    google::protobuf::compiler::DiskSourceTree source_tree;
-
-    source_tree.MapPath("", ".");
-    add_default_proto_paths(source_tree);
-    for (const auto& path : ctx.paths) {
-      source_tree.MapPath("", path);
+    auto [pool, _] = get_pool(ctx, url, rpc);
+    if (pool == nullptr) {
+      return 1;
     }
 
-    google::protobuf::compiler::Importer importer(&source_tree, &ec);
-    for (const auto &proto : ctx.protos) {
-      const google::protobuf::FileDescriptor* desc = importer.Import(proto);
-
-      if (desc == nullptr) {
-	std::cerr << "failed to import proto file: " << proto << std::endl;
-	return 1;
-      }
-    }
-
-    const google::protobuf::DescriptorPool *pool = importer.pool();
-    auto [svc_desc, method_desc] = get_rpc_info(pool, rpc);
-    google::protobuf::DynamicMessageFactory dynamic_factory(pool);
+    auto [svc_desc, method_desc] = get_rpc_info(pool.get(), rpc);
+    google::protobuf::DynamicMessageFactory dynamic_factory(pool.get());
 
     curl_easy_setopt(curl_handle.get(), CURLOPT_VERBOSE, ctx.verbose_flag);
     curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + rpc).c_str()); // TODO insert / between if needed
@@ -464,7 +576,7 @@ auto main(int argc, char **argv) -> int {
     }
     curl_easy_setopt(curl_handle.get(), CURLOPT_HTTPHEADER, list);
 
-    RpcHandler rpc_handler(curl_handle.get(), svc_desc, method_desc, dynamic_factory, pool);
+    RpcHandler rpc_handler(curl_handle.get(), svc_desc, method_desc, dynamic_factory, pool.get());
     ret_val = rpc_handler.handle(ctx);
 
     curl_slist_free_all(list);
