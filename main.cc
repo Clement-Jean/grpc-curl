@@ -540,12 +540,14 @@ auto main(int argc, char **argv) -> int {
 
   auto curl_handle = std::unique_ptr<CURL, void(*)(CURL*)>(curl_easy_init(), (void (*)(CURL *))curl_easy_cleanup);
   if (curl_handle) {
-    std::string url = ctx.args[0];
-    std::string rpc = ctx.args[1];
+    std::filesystem::path url = ctx.args[0];
+    std::filesystem::path rpc = ctx.args[1];
+    curl_version_info_data *curl_info = curl_version_info(CURLVERSION_NOW);
+    std::string user_agent = std::string("libcurl/") + curl_info->version;
 
     curl_easy_setopt(curl_handle.get(), CURLOPT_VERBOSE, ctx.verbose_flag);
     curl_easy_setopt(curl_handle.get(), CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_USERAGENT, "libcurl/8.7.1"); // TODO better user agent
+    curl_easy_setopt(curl_handle.get(), CURLOPT_USERAGENT, user_agent.c_str());
     curl_easy_setopt(curl_handle.get(), CURLOPT_POST, 1L);
     curl_easy_setopt(curl_handle.get(), CURLOPT_READFUNCTION, read_callback);
     curl_easy_setopt(curl_handle.get(), CURLOPT_WRITEFUNCTION, write_callback);
@@ -570,8 +572,9 @@ auto main(int argc, char **argv) -> int {
 
     auto [svc_desc, method_desc] = get_rpc_info(pool.get(), rpc);
     google::protobuf::DynamicMessageFactory dynamic_factory(pool.get());
+    std::filesystem::path full_url = url / rpc;
 
-    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, (url + rpc).c_str()); // TODO insert / between if needed
+    curl_easy_setopt(curl_handle.get(), CURLOPT_URL, full_url.c_str());
 
     RpcHandler rpc_handler(curl_handle.get(), svc_desc, method_desc, dynamic_factory, pool.get());
     ret_val = rpc_handler.handle(ctx);
