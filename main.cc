@@ -219,6 +219,26 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb,
   return realsize;
 }
 
+static size_t reflection_write_callback(void *contents, size_t size, size_t nmemb,
+					void *userdata) {
+  size_t realsize = size * nmemb;
+  auto res_message = (google::protobuf::Message *)userdata;
+
+  if (realsize > 5) {
+    auto in = google::protobuf::io::ArrayInputStream(contents, realsize);
+
+    in.Skip(5); // skip gRPC frame metadata
+    if (!res_message->ParsePartialFromZeroCopyStream(&in)) {
+      std::cerr << "failed to parse server streaming response" << std::endl;
+      return 0;
+    }
+  } else {
+    return 0;
+  }
+
+  return realsize;
+}
+
 static size_t read_callback(char *ptr, size_t size, size_t nmemb,
                             void *userdata) {
   auto request_queue = (std::queue<std::unique_ptr<google::protobuf::Message>> *)userdata;
@@ -420,7 +440,8 @@ auto add_default_proto_paths(google::protobuf::compiler::DiskSourceTree& source_
 }
 
 auto is_reflection_enabled(CURL *curl_handle, const Context &ctx,
-                           const std::string &url, const std::string &rpc)
+                           const std::filesystem::path &url,
+                           const std::string &rpc)
     -> std::unique_ptr<google::protobuf::DescriptorPool> {
   assert(curl_handle != nullptr);
 
@@ -435,10 +456,11 @@ auto is_reflection_enabled(CURL *curl_handle, const Context &ctx,
 
   std::queue<std::unique_ptr<grpc::reflection::v1::ServerReflectionRequest>> req_queue;
   grpc::reflection::v1::ServerReflectionResponse res_message;
+  auto full_url = url / "grpc.reflection.v1.ServerReflection/ServerReflectionInfo";
 
-  curl_easy_setopt(curl_handle, CURLOPT_URL, (url + "grpc.reflection.v1.ServerReflection/ServerReflectionInfo").c_str());
+  curl_easy_setopt(curl_handle, CURLOPT_URL, full_url.c_str());
   curl_easy_setopt(curl_handle, CURLOPT_READDATA, (void *)&req_queue);
-  // TODO we shouldn't print the response message (maybe set different CURLOPT_WRITEFUNCTION?)
+  curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, reflection_write_callback);
   curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&res_message);
 
   req_queue.push(std::move(req_message));
@@ -447,7 +469,6 @@ auto is_reflection_enabled(CURL *curl_handle, const Context &ctx,
   CURLHcode h = curl_easy_header(curl_handle, "grpc-status", 0, CURLH_HEADER, -1, &type);
 
   if (res != CURLE_OK) {
-    std::cerr << "error: " << curl_easy_strerror(res) << std::endl;
     return nullptr;
   }
 
@@ -455,9 +476,6 @@ auto is_reflection_enabled(CURL *curl_handle, const Context &ctx,
     if (type != nullptr && type->amount != 0 && type->value != nullptr && std::string(type->value) != "0") {
       h = curl_easy_header(curl_handle, "grpc-message", 0, CURLH_HEADER,
 			   -1, &type);
-      // TODO we probably shouldn't print this as an error
-      //      because it just mean that the reflection is not enabled
-      std::cerr << "error: " << type->value << std::endl;
       return nullptr;
     }
   }
@@ -483,7 +501,7 @@ auto is_reflection_enabled(CURL *curl_handle, const Context &ctx,
 }
 
 // we return the importer because it returns a reference to its private field pool_...
-auto get_pool(CURL *curl_handle, const Context &ctx, const std::string& url, const std::string& rpc)
+auto get_pool(CURL *curl_handle, const Context &ctx, const std::filesystem::path& url, const std::string& rpc)
     -> std::pair<std::unique_ptr<google::protobuf::DescriptorPool>,
                  std::unique_ptr<google::protobuf::compiler::Importer>> {
 
@@ -550,7 +568,6 @@ auto main(int argc, char **argv) -> int {
     curl_easy_setopt(curl_handle.get(), CURLOPT_USERAGENT, user_agent.c_str());
     curl_easy_setopt(curl_handle.get(), CURLOPT_POST, 1L);
     curl_easy_setopt(curl_handle.get(), CURLOPT_READFUNCTION, read_callback);
-    curl_easy_setopt(curl_handle.get(), CURLOPT_WRITEFUNCTION, write_callback);
 
     if (ctx.ca_cert.size() != 0) {
       curl_easy_setopt(curl_handle.get(), CURLOPT_SSLVERSION, CURL_SSLVERSION_MAX_DEFAULT);
@@ -574,6 +591,7 @@ auto main(int argc, char **argv) -> int {
     google::protobuf::DynamicMessageFactory dynamic_factory(pool.get());
     std::filesystem::path full_url = url / rpc;
 
+    curl_easy_setopt(curl_handle.get(), CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl_handle.get(), CURLOPT_URL, full_url.c_str());
 
     RpcHandler rpc_handler(curl_handle.get(), svc_desc, method_desc, dynamic_factory, pool.get());
