@@ -15,14 +15,10 @@
 #include "proto/reflection.pb.h"
 
 #include <google/protobuf/io/coded_stream.h>
-#include <google/protobuf/io/tokenizer.h>
-#include <google/protobuf/io/zero_copy_stream_impl.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/dynamic_message.h>
-#include <google/protobuf/text_format.h>
 #include <google/protobuf/util/json_util.h>
 #include <google/protobuf/compiler/importer.h>
-#include <google/protobuf/struct.pb.h>
 
 class ErrorPrinter : public google::protobuf::io::ErrorCollector,
                      public google::protobuf::compiler::MultiFileErrorCollector
