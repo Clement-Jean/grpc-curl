@@ -37,8 +37,10 @@ When running in client streaming or bidi streaming, the CLI will ask for input o
 ./grpc-curl "http://localhost:50051/" greet.GreetService/GreetJointly`
 {"name": "clement", "separator": " and "}
 {"name": "daniel"}
-[CTRL+D]
-greeting: "hello clement and daniel"
+[CTRL+d]
+{
+ "greeting": "Hello clement and daniel"
+}
 ```
 
 ## Missing Features
