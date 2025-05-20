@@ -482,6 +482,10 @@ auto is_reflection_enabled(CURL *curl_handle, const Context &ctx,
   // FIX based on current (naive) tests the file descriptors are in reverse
   //     order. Meaning that if a.proto depends on b.proto, this will be
   //     [a.proto, b.proto] and not [b.proto, a.proto]
+  //
+  //     after thinking about it a bit more, we could be order-independent
+  //     by simply calculating the in-degree of each descriptor
+  //     and then add all the n-level, (n-1)-level, ..., 0-level
   for (auto i = fdr.file_descriptor_proto_size() - 1; i >= 0; i--) {
     auto fd_bytes = fdr.file_descriptor_proto(i);
     google::protobuf::io::ArrayInputStream raw_input(fd_bytes.data(), fd_bytes.size());
