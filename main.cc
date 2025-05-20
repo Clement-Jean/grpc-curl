@@ -501,8 +501,11 @@ auto get_pool(CURL *curl_handle, const Context &ctx, const std::filesystem::path
     -> std::pair<std::unique_ptr<google::protobuf::DescriptorPool>,
                  std::unique_ptr<google::protobuf::compiler::Importer>> {
 
-  // TODO maybe we should avoid checking reflection if the --proto is passed?
-  std::unique_ptr<google::protobuf::DescriptorPool> reflection_pool = is_reflection_enabled(curl_handle, ctx, url, rpc);
+  std::unique_ptr<google::protobuf::DescriptorPool> reflection_pool = nullptr;
+
+  if (ctx.protos.size() == 0) {
+    reflection_pool = is_reflection_enabled(curl_handle, ctx, url, rpc);
+  }
 
   if (reflection_pool == nullptr) {
     if (ctx.protos.size() == 0) { // we need a proto file for the definitions
